@@ -18,14 +18,22 @@ Layout mirrors `$HOME`: `config/` → `~/.config/`, `local/` → `~/.local/`.
 ~/.dotfiles/save.sh            # sync + commit, or "save.sh <message>"
 ```
 
-## Restore (fresh install → this machine)
-
 ```bash
 git clone https://github.com/<you>/<repo> ~/.dotfiles
 ~/.dotfiles/install.sh          # add --dry-run to preview
 ```
 
 Then, if the Omarchy shell was customized: `omarchy restart shell`.
+
+### Auto-backup hook
+
+`post-update.hook` runs `save.sh` (and pushes) after every `omarchy update`.
+Reinstall it after a fresh restore:
+
+```bash
+omarchy hook install post-update ~/.dotfiles/post-update.hook
+```
+
 
 ## GitHub remote setup (once)
 
