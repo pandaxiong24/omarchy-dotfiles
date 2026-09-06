@@ -19,10 +19,3 @@ save_output="$("$REPO/save.sh" "auto-backup after omarchy update $(date --iso-86
 [[ $save_output == *"Nothing changed"* ]] && exit 0
 echo "$LOG_TAG $save_output"
 
-# Push only when a remote is configured; bounded so a dead network
-# cannot hang omarchy update.
-if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
-  if ! timeout 120 git -C "$REPO" push -q 2>&1; then
-    echo "$LOG_TAG push failed (offline?), will retry on next update"
-  fi
-fi

@@ -37,3 +37,11 @@ else
   git commit -m "${1:-backup $(date --iso-8601=seconds)}"
   echo "Committed."
 fi
+
+# Push when a remote is configured; bounded so a dead network cannot hang
+# callers (e.g. the post-update hook).
+if git remote get-url origin >/dev/null 2>&1; then
+  if ! timeout 120 git push -q 2>&1; then
+    echo "Push failed (offline?), will retry on next backup."
+  fi
+fi
