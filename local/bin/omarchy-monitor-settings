@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Monitor Settings — configure Hyprland monitor position and refresh rate.
+
+Reads live monitor state from `hyprctl monitors -j`, lets you pick a refresh
+rate and X/Y position per monitor, applies changes with
+`hyprctl eval 'hl.monitor({...})'`, and persists them to
+~/.config/hypr/monitors.lua (with a timestamped backup).
+"""
+
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk  # noqa: E402
+
+MONITORS_LUA = os.path.expanduser("~/.config/hypr/monitors.lua")
+
+
+def hyprctl_json():
+    out = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"hyprctl monitors -j failed: {out.stderr.strip()}")
+    return json.loads(out.stdout)
+
+
+def hyprctl_eval(lua):
+    out = subprocess.run(["hyprctl", "eval", lua], capture_output=True, text=True)
+    ok = out.returncode == 0 and out.stdout.strip().lower().startswith("ok")
+    return ok, (out.stdout + out.stderr).strip()
+
+
+def fmt_refresh(rate):
+    text = f"{rate:g}"
+    return text
+
+
+class MonitorRow:
+    def __init__(self, data):
+        self.data = data
+        name = data["name"]
+        self.modes = []  # (label, refresh_rate, width, height)
+
+        current_w, current_h = data["width"], data["height"]
+        for mode in data["availableModes"]:
+            m = re.fullmatch(r"(\d+)x(\d+)@([\d.]+)Hz", mode)
+            if not m:
+                continue
+            w, h, rate = int(m.group(1)), int(m.group(2)), float(m.group(3))
+            if (w, h) != (current_w, current_h):
+                continue
+            self.modes.append((f"{fmt_refresh(rate)} Hz", rate, w, h))
+        self.modes.sort(key=lambda entry: entry[1], reverse=True)
+        if not self.modes:
+            self.modes.append((f"{fmt_refresh(data['refreshRate'])} Hz",
+                               data["refreshRate"], current_w, current_h))
+
+        self.frame = Gtk.Frame()
+        grid = Gtk.Grid(column_spacing=12, row_spacing=8, margin_top=12,
+                        margin_bottom=12, margin_start=12, margin_end=12)
+        self.frame.set_child(grid)
+
+        title = Gtk.Label(halign=Gtk.Align.START, xalign=0)
+        title.set_markup(f"<b>{name}</b> — {data['description']}")
+        grid.attach(title, 0, 0, 4, 1)
+
+        def plain_label(text):
+            label = Gtk.Label(label=text, xalign=0)
+            return label
+
+        grid.attach(plain_label("Refresh rate"), 0, 1, 1, 1)
+        self.mode_dropdown = Gtk.DropDown()
+        self.mode_dropdown.set_model(Gtk.StringList.new(
+            [entry[0] for entry in self.modes]))
+        current = data["refreshRate"]
+        selected = next((i for i, entry in enumerate(self.modes)
+                         if abs(entry[1] - current) < 0.5), 0)
+        self.mode_dropdown.set_selected(selected)
+        grid.attach(self.mode_dropdown, 1, 1, 1, 1)
+
+        grid.attach(plain_label("Position X"), 0, 2, 1, 1)
+        self.x_spin = Gtk.SpinButton.new_with_range(-32768, 32768, 1)
+        self.x_spin.set_value(data["x"])
+        grid.attach(self.x_spin, 1, 2, 1, 1)
+
+        grid.attach(plain_label("Position Y"), 2, 2, 1, 1)
+        self.y_spin = Gtk.SpinButton.new_with_range(-32768, 32768, 1)
+        self.y_spin.set_value(data["y"])
+        grid.attach(self.y_spin, 3, 2, 1, 1)
+
+    def selected_mode(self):
+        entry = self.modes[self.mode_dropdown.get_selected()]
+        rate = fmt_refresh(entry[1])
+        return f"{entry[2]}x{entry[3]}@{rate}"
+
+    def position(self):
+        return f"{int(self.x_spin.get_value())}x{int(self.y_spin.get_value())}"
+
+
+class MonitorWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Monitor Settings")
+        self.set_default_size(560, 300)
+
+        self.rows = []
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                        margin_top=12, margin_bottom=12,
+                        margin_start=12, margin_end=12)
+        self.set_child(outer)
+
+        self.rows_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        outer.append(self.rows_box)
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8,
+                          halign=Gtk.Align.END)
+        outer.append(buttons)
+
+        refresh_btn = Gtk.Button.new_with_label("Reload")
+        refresh_btn.connect("clicked", self.on_reload)
+        buttons.append(refresh_btn)
+
+        apply_btn = Gtk.Button.new_with_label("Apply")
+        apply_btn.get_style_context().add_class("suggested-action")
+        apply_btn.connect("clicked", self.on_apply)
+        buttons.append(apply_btn)
+
+        save_btn = Gtk.Button.new_with_label("Apply and save")
+        save_btn.connect("clicked", self.on_save)
+        buttons.append(save_btn)
+
+        self.status = Gtk.Label(label="", xalign=0)
+        self.status.set_wrap(True)
+        outer.append(self.status)
+
+        self.load_monitors()
+
+    def load_monitors(self):
+        for child in list(self.rows_box.observe_children()):
+            self.rows_box.remove(child)
+        self.rows = []
+        try:
+            monitors = hyprctl_json()
+        except RuntimeError as err:
+            self.status.set_text(str(err))
+            return
+        monitors.sort(key=lambda m: (m["x"], m["y"]))
+        for data in monitors:
+            row = MonitorRow(data)
+            self.rows.append(row)
+            self.rows_box.append(row.frame)
+
+    def apply_all(self):
+        failures = []
+        for row in self.rows:
+            name = row.data["name"]
+            scale = row.data["scale"]
+            lua = (f'hl.monitor({{ output = "{name}", '
+                   f'mode = "{row.selected_mode()}", '
+                   f'position = "{row.position()}", scale = {scale} }})')
+            ok, output = hyprctl_eval(lua)
+            if not ok:
+                failures.append(f"{name}: {output}")
+        return failures
+
+    def on_reload(self, _button):
+        self.load_monitors()
+        self.status.set_text("Reloaded current monitor state.")
+
+    def on_apply(self, _button):
+        failures = self.apply_all()
+        if failures:
+            self.status.set_text("Failed:\n" + "\n".join(failures))
+        else:
+            self.status.set_text("Applied. (Not saved — reverts on reload.)")
+
+    def on_save(self, _button):
+        failures = self.apply_all()
+        if failures:
+            self.status.set_text("Failed:\n" + "\n".join(failures))
+            return
+
+        errors = self.write_monitors_lua()
+        if errors:
+            self.status.set_text(errors)
+            return
+        out = subprocess.run(["hyprctl", "configerrors"],
+                             capture_output=True, text=True)
+        if out.returncode != 0 or out.stdout.strip():
+            self.status.set_text(
+                "Saved, but config errors:\n" + out.stdout.strip())
+        else:
+            self.status.set_text(
+                f"Applied and saved to {MONITORS_LUA}")
+
+    def write_monitors_lua(self):
+        try:
+            with open(MONITORS_LUA, "r", encoding="utf-8") as handle:
+                old = handle.read()
+        except FileNotFoundError:
+            old = ""
+
+        gdk = re.search(r'^hl\.env\("GDK_SCALE", "([^"]*)"\)', old, re.M)
+        gdk_scale = gdk.group(1) if gdk else "1"
+
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = f"{MONITORS_LUA}.bak.{stamp}"
+        try:
+            shutil.copy2(MONITORS_LUA, backup)
+        except FileNotFoundError:
+            backup = None
+
+        lines = [
+            "-- Monitor configuration — generated by Monitor Settings "
+            f"on {datetime.date.today().isoformat()}",
+            "-- See https://wiki.hypr.land/Configuring/Basics/Monitors/",
+            "-- List monitors and supported resolutions with: hyprctl monitors all",
+            "",
+            f'hl.env("GDK_SCALE", "{gdk_scale}")',
+            "",
+        ]
+        for row in self.rows:
+            scale = row.data["scale"]
+            scale_text = f"{scale:g}"
+            lines.append(
+                f'hl.monitor({{ output = "{row.data["name"]}", '
+                f'mode = "{row.selected_mode()}", '
+                f'position = "{row.position()}", scale = {scale_text} }})')
+        lines.append("")
+        try:
+            tmp = MONITORS_LUA + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines))
+            os.replace(tmp, MONITORS_LUA)
+        except OSError as err:
+            return f"Could not write {MONITORS_LUA}: {err}"
+        return None
+
+
+class MonitorApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="org.omarchy.MonitorSettings")
+
+    def do_activate(self):
+        window = MonitorWindow(self)
+        window.present()
+
+
+def main():
+    try:
+        hyprctl_json()
+    except Exception as err:  # surface compositor errors before opening a UI
+        print(err, file=sys.stderr)
+        return 1
+    app = MonitorApp()
+    return app.run(None)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

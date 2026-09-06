@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Monitor Settings
+GenericName=Display configuration
+Comment=Change monitor position and refresh rate
+Exec=omarchy-monitor-settings
+Icon=video-display
+Categories=Settings;HardwareSettings;
+Keywords=monitor;display;resolution;refresh;screen;
+StartupNotify=true
+Terminal=false

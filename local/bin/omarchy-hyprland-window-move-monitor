@@ -1,0 +1,64 @@
+#!/bin/bash
+# omarchy:summary=Move the active window to the monitor in a direction
+# omarchy:args=[l|r|u|d]
+# omarchy:examples=omarchy-hyprland-window-move-monitor l
+#
+# MS-Windows-style: sends the active window to the nearest monitor in the
+# given direction. Focus follows the window. No-op when no monitor lies in
+# that direction (edge monitor, like Windows).
+
+set -euo pipefail
+
+dir="${1:-}"
+case "$dir" in
+l | r | u | d) ;;
+*)
+  echo "Usage: omarchy-hyprland-window-move-monitor [l|r|u|d]" >&2
+  exit 1
+  ;;
+esac
+
+active="$(hyprctl activewindow -j)" || exit 0
+addr="$(echo "$active" | jq -r '.address // empty')"
+if [[ -z $addr || $addr == "0x0" ]]; then
+  exit 0
+fi
+
+win_x="$(echo "$active" | jq -r '.at[0]')"
+win_y="$(echo "$active" | jq -r '.at[1]')"
+win_w="$(echo "$active" | jq -r '.size[0]')"
+win_h="$(echo "$active" | jq -r '.size[1]')"
+cx=$((win_x + win_w / 2))
+cy=$((win_y + win_h / 2))
+
+# Target monitor = nearest one fully beyond the current monitor's edge in
+# the given direction (monitors overlapping on the perpendicular axis win;
+# otherwise fall back to any monitor in that direction).
+target_ws="$(hyprctl monitors -j | jq -r --argjson cx "$cx" --argjson cy "$cy" --arg dir "$dir" '
+  def ov(a; b; c; d): ([a, c] | max) < ([b, d] | min);
+  map({name, x, y, w: (.width / .scale), h: (.height / .scale), ws: .activeWorkspace.id})
+  | (map(select($cx >= .x and $cx < .x + .w and $cy >= .y and $cy < .y + .h)) | .[0]) as $cur
+  | if $cur == null then "" else
+      (map(select(. != $cur and
+        (if $dir == "l" then .x + .w <= $cur.x + 1
+         elif $dir == "r" then .x >= $cur.x + $cur.w - 1
+         elif $dir == "u" then .y + .h <= $cur.y + 1
+         else .y >= $cur.y + $cur.h - 1 end)))) as $cands
+      | if ($cands | length) == 0 then "" else
+          (if $dir == "l" or $dir == "r"
+           then ($cands | map(select(ov($cur.y; $cur.y + $cur.h; .y; .y + .h))))
+           else ($cands | map(select(ov($cur.x; $cur.x + $cur.w; .x; .x + .w))))
+           end) as $aligned
+          | (if ($aligned | length) > 0 then $aligned else $cands end) as $pool
+          | (if $dir == "l" then ($pool | max_by(.x + .w))
+             elif $dir == "r" then ($pool | min_by(.x))
+             elif $dir == "u" then ($pool | max_by(.y + .h))
+             else ($pool | min_by(.y)) end).ws
+        end
+    end')"
+
+if [[ -z $target_ws ]]; then
+  exit 0
+fi
+
+hyprctl dispatch "hl.dsp.window.move({ workspace = \"$target_ws\" })" >/dev/null
