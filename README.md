@@ -41,7 +41,7 @@ A git-based config backup that maintains itself:
 ## 🚀 Quick start
 
 ```bash
-git clone https://github.com/pandaxiong24/omarchy-dotfiles ~/.dotfiles
+git clone https://github.com/pandaxiong24/omarchy-multi-monitor ~/.dotfiles
 ~/.dotfiles/install.sh              # --dry-run to preview
 omarchy hook install post-update ~/.dotfiles/post-update.hook
 omarchy restart shell               # if the shell/bar was customized

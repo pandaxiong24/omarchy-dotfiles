@@ -10,7 +10,7 @@
 set -uo pipefail
 
 REPO="${DOTFILES_REPO:-$HOME/.dotfiles}"
-LOG_TAG="[omarchy-dotfiles-hook]"
+LOG_TAG="[omarchy-multi-monitor-hook]"
 
 [[ -d $REPO/.git ]] || exit 0
 
