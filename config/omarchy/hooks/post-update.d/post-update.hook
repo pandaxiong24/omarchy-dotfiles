@@ -1,0 +1,28 @@
+#!/bin/bash
+# omarchy:summary=Back up dotfiles to git after omarchy update
+# omarchy:examples=(installed as a post-update hook)
+#
+# Runs ~/.dotfiles/save.sh (sync config into the dotfiles repo + commit)
+# and pushes to the GitHub remote when one is configured. Failures are
+# non-fatal so an offline machine or unreachable remote never blocks
+# omarchy update.
+
+set -uo pipefail
+
+REPO="${DOTFILES_REPO:-$HOME/.dotfiles}"
+LOG_TAG="[omarchy-dotfiles-hook]"
+
+[[ -d $REPO/.git ]] || exit 0
+
+save_output="$("$REPO/save.sh" "auto-backup after omarchy update $(date --iso-8601=seconds)" 2>&1)" ||
+  { echo "$LOG_TAG save failed: $save_output" >&2; exit 0; }
+[[ $save_output == *"Nothing changed"* ]] && exit 0
+echo "$LOG_TAG $save_output"
+
+# Push only when a remote is configured; bounded so a dead network
+# cannot hang omarchy update.
+if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+  if ! timeout 120 git -C "$REPO" push -q 2>&1; then
+    echo "$LOG_TAG push failed (offline?), will retry on next update"
+  fi
+fi
