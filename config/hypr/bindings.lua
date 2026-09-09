@@ -27,9 +27,3 @@
 -- o.bind("SUPER + SHIFT + S", nil, "omarchy-capture-screenshot")
 -- o.bind("SUPER + H", nil, "voxtype record toggle")
 -- o.bind("SUPER + PERIOD", nil, "omarchy-shell shell toggle omarchy.emojis")
-
--- Windows-style: send active window to the monitor in that direction
-o.bind("SUPER + CTRL + SHIFT + LEFT", "Move window to monitor on left", "omarchy-hyprland-window-move-monitor l")
-o.bind("SUPER + CTRL + SHIFT + RIGHT", "Move window to monitor on right", "omarchy-hyprland-window-move-monitor r")
-o.bind("SUPER + CTRL + SHIFT + UP", "Move window to monitor above", "omarchy-hyprland-window-move-monitor u")
-o.bind("SUPER + CTRL + SHIFT + DOWN", "Move window to monitor below", "omarchy-hyprland-window-move-monitor d")
